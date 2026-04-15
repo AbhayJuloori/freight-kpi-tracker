@@ -20,7 +20,7 @@ def get_conn():
     return snowflake.connector.connect(
         account=os.environ["SNOWFLAKE_ACCOUNT"],
         user=os.environ["SNOWFLAKE_USER"],
-        password=os.environ["SNOWFLAKE_PASSWORD"],
+        private_key_file=os.environ.get("SNOWFLAKE_PRIVATE_KEY_FILE", "rsa_key.p8"),
         warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
         database=os.environ.get("SNOWFLAKE_DATABASE", "FREIGHT_DB"),
         schema=os.environ.get("SNOWFLAKE_SCHEMA", "LOGISTICS"),
