@@ -13,9 +13,9 @@ Six targeted improvements addressing data credibility, schema correctness, anoma
 
 ### FAF5 as actual seed
 
-- On startup, scan `data/raw/faf5_*.csv`. If absent and `--use-priors` not passed: raise `FileNotFoundError` with a clear message explaining what to download and from where.
+- On startup, resolve the FAF5 file in this order: (1) `--faf5-path` CLI arg if provided, (2) newest file matching `data/raw/faf5_*.csv` by mtime, (3) fail fast. If no file found and `--use-priors` not passed: raise `FileNotFoundError` with a clear message explaining what to download and from where.
 - If `--use-priors` is passed: print a loud warning to stderr (`WARNING: --use-priors active; using hardcoded priors, not FAF5 data`) and continue with existing MODE_PROBS and lane pool.
-- When FAF5 is present: parse origin/destination zone frequencies to weight the lane pool; parse mode splits by commodity to replace hardcoded `MODE_PROBS`.
+- When FAF5 is present: parse origin/destination zone frequencies to weight the lane pool; derive mode distribution from FAF5 lane-level OD pair counts (not commodity — commodity is not a modeled field) to replace hardcoded `MODE_PROBS`.
 
 ### CARRIER_RATES as source of truth
 
@@ -31,11 +31,21 @@ SHIPMENTS column `base_rate` → two columns:
 - `base_rate_per_cwt FLOAT` — the per-hundredweight rate looked up from CARRIER_RATES
 - `base_cost FLOAT` — the computed cost before fuel surcharge
 
+### run_id propagation
+
+`generate_synthetic.py` generates a single `run_id = str(uuid.uuid4())` at startup. This is the single source of truth — it flows into every output:
+
+- `shipments.csv` — `run_id` column on every row
+- `anomaly_ground_truth.parquet` — `run_id` column (enables joins back to the generation run)
+- `generation_metadata.json` — `run_id` field
+- `load_snowflake.py` — reads `run_id` from `generation_metadata.json`, inserts into `GENERATION_RUNS`, and the column is already present in each row of `shipments.csv` for bulk load into `SHIPMENTS`
+
 ### Seed provenance
 
 After generation, write `data/processed/generation_metadata.json`:
 ```json
 {
+  "run_id": "<uuid4>",
   "seed_source": "FAF5" | "PRIORS",
   "faf5_file": "<path or null>",
   "generated_at": "<ISO timestamp>",
@@ -44,7 +54,7 @@ After generation, write `data/processed/generation_metadata.json`:
   "anomaly_rate": 0.07
 }
 ```
-Every downstream artifact (evaluation report, dashboard footer) reads this file and tags its output with `seed_source`. Resume claims are only credible when `seed_source = "FAF5"`.
+Every downstream artifact (evaluation report, dashboard footer) reads this file and tags its output with `seed_source` and `run_id`. Resume claims are only credible when `seed_source = "FAF5"`.
 
 ---
 
@@ -162,7 +172,18 @@ Replaces static `dashboard.html` with a **Dash + Plotly** app.
 ### Stack
 - `dash`, `dash-bootstrap-components` for layout
 - `plotly_dark` template, accent palette: amber (anomalies), steel-blue (normal), red (high-severity)
-- Reads local CSVs/parquets + `generation_metadata.json` + `evaluation_report.json` on startup — no Snowflake required
+- No Snowflake connection required at runtime
+
+### Data sources
+
+| Artifact | Used for |
+|----------|----------|
+| `data/processed/shipments.csv` | all shipment charts |
+| `data/processed/anomaly_ground_truth.parquet` | anomaly overlay (is_anomaly flag per shipment) |
+| `data/processed/generation_metadata.json` | footer provenance, run_id |
+| `data/processed/evaluation_report.json` | evaluation panel (written by `evaluate_anomaly.py --local`) |
+
+On startup, `dashboard.py` also runs lightweight local anomaly recomputation (Z-score + IQR in pandas, same logic as `evaluate_anomaly.py --local`) to produce shipment-level flag columns and lane-week rolling deviation. This means anomaly overlays, spike highlights, and lane anomaly density are all derived from `shipments.csv` directly — no separate export from Snowflake needed. If `evaluation_report.json` is present it is used for the evaluation panel; if absent that panel shows a "run `make evaluate` first" message.
 
 ### Layout
 
@@ -179,12 +200,22 @@ Replaces static `dashboard.html` with a **Dash + Plotly** app.
 ### New Makefile target
 ```makefile
 dashboard:
-    python scripts/dashboard.py
+	$(PYTHON) scripts/dashboard.py
 ```
 
 ### Dependencies added to `requirements.txt`
 - `dash`
 - `dash-bootstrap-components`
+
+---
+
+## CLI Arguments for `generate_synthetic.py`
+
+| Argument | Default | Notes |
+|----------|---------|-------|
+| `--use-priors` | off | Use hardcoded priors; emits loud stderr warning |
+| `--faf5-path PATH` | auto-detect newest `data/raw/faf5_*.csv` | Explicit FAF5 file override |
+| `--n INT` | 75000 | Number of shipments; needed for integration test fixture (n=500) |
 
 ---
 
