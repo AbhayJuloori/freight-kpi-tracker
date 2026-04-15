@@ -102,6 +102,7 @@ WITH weekly_avg AS (
         AVG(total_cost / NULLIF(weight_lbs, 0))   AS avg_cpl
     FROM SHIPMENTS
     GROUP BY 1, 2, 3
+    HAVING COUNT(*) >= 5   -- ignore sparse lane×week cells
 ),
 rolling AS (
     SELECT
