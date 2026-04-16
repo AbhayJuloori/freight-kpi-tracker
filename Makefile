@@ -2,7 +2,7 @@ VENV = .venv
 PYTHON = $(VENV)/bin/python
 PIP = $(VENV)/bin/pip
 
-.PHONY: install download generate load validate test lint clean
+.PHONY: install download generate generate-priors generate-fixture load validate test lint evaluate dashboard clean
 
 install:
 	python3 -m venv $(VENV)
@@ -14,6 +14,18 @@ download:
 
 generate:
 	$(PYTHON) scripts/generate_synthetic.py
+
+generate-priors:
+	$(PYTHON) scripts/generate_synthetic.py --use-priors
+
+generate-fixture:
+	$(PYTHON) scripts/generate_synthetic.py --use-priors --n 500
+
+evaluate:
+	$(PYTHON) scripts/evaluate_anomaly.py --local
+
+dashboard:
+	$(PYTHON) scripts/dashboard.py
 
 load:
 	$(PYTHON) scripts/load_snowflake.py
