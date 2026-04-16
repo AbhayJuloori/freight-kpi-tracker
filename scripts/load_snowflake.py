@@ -23,14 +23,19 @@ TABLES = [
 
 
 def get_conn():
-    return snowflake.connector.connect(
+    kwargs = dict(
         account=os.environ['SNOWFLAKE_ACCOUNT'],
         user=os.environ['SNOWFLAKE_USER'],
-        private_key_file=os.environ.get('SNOWFLAKE_PRIVATE_KEY_FILE', 'rsa_key.p8'),
         warehouse=os.environ.get('SNOWFLAKE_WAREHOUSE', 'COMPUTE_WH'),
         database=os.environ.get('SNOWFLAKE_DATABASE', 'FREIGHT_DB'),
         schema=os.environ.get('SNOWFLAKE_SCHEMA', 'LOGISTICS'),
     )
+    key_file = os.environ.get('SNOWFLAKE_PRIVATE_KEY_FILE')
+    if key_file:
+        kwargs['private_key_file'] = key_file
+    else:
+        kwargs['password'] = os.environ['SNOWFLAKE_PASSWORD']
+    return snowflake.connector.connect(**kwargs)
 
 
 def run_sql_file(cursor, path: Path):
