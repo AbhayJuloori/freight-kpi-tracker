@@ -1,13 +1,13 @@
 -- ============================================================
--- ANOMALY DETECTION — populates ANOMALY_FLAGS
+-- ANOMALY DETECTION — populates ANOMALY_FLAGS and LANE_WEEK_TRENDS
 -- Run after each data load. Truncate first to avoid dupes.
 -- ============================================================
 USE SCHEMA FREIGHT_DB.LOGISTICS;
 
 TRUNCATE TABLE ANOMALY_FLAGS;
+TRUNCATE TABLE LANE_WEEK_TRENDS;
 
 -- ── Method 1: Z-Score by lane × mode ────────────────────────
--- Flags shipments where |z-score of cost_per_lb| > 2.5
 INSERT INTO ANOMALY_FLAGS (
     flag_id, shipment_id, flag_type, lane_id, mode,
     region, cost_value, z_score, flag_date
@@ -16,7 +16,7 @@ WITH lane_stats AS (
     SELECT
         lane_id,
         mode,
-        AVG(total_cost / NULLIF(weight_lbs, 0))   AS mean_cpl,
+        AVG(total_cost / NULLIF(weight_lbs, 0))    AS mean_cpl,
         STDDEV(total_cost / NULLIF(weight_lbs, 0)) AS std_cpl
     FROM SHIPMENTS
     GROUP BY lane_id, mode
@@ -27,12 +27,11 @@ scored AS (
         s.shipment_id,
         s.lane_id,
         s.mode,
-        s.origin_city                                          AS region,
-        s.total_cost / NULLIF(s.weight_lbs, 0)               AS cpl,
-        s.total_cost                                          AS cost_value,
+        s.origin_city                                           AS region,
+        s.total_cost                                           AS cost_value,
         s.ship_date,
         (s.total_cost / NULLIF(s.weight_lbs, 0) - ls.mean_cpl)
-            / NULLIF(ls.std_cpl, 0)                           AS z_score
+            / NULLIF(ls.std_cpl, 0)                            AS z_score
     FROM SHIPMENTS s
     JOIN lane_stats ls ON s.lane_id = ls.lane_id AND s.mode = ls.mode
 )
@@ -89,57 +88,71 @@ WHERE (s.total_cost / NULLIF(s.weight_lbs, 0)) > b.upper_fence
    OR (s.total_cost / NULLIF(s.weight_lbs, 0)) < b.lower_fence;
 
 
--- ── Method 3: 4-Week Moving Average Deviation > 20% ─────────
-INSERT INTO ANOMALY_FLAGS (
-    flag_id, shipment_id, flag_type, lane_id, mode,
-    region, cost_value, z_score, flag_date
+-- ── Lane-week trend detection → LANE_WEEK_TRENDS ────────────
+-- Rolling signal trusted only after >= 4 prior observed weeks.
+INSERT INTO LANE_WEEK_TRENDS (
+    week_start, lane_id, mode, shipment_count,
+    avg_cost_per_lb, rolling_4wk_avg, pct_deviation, is_anomalous
 )
 WITH weekly_avg AS (
     SELECT
         DATE_TRUNC('WEEK', ship_date)              AS week_start,
         lane_id,
         mode,
+        COUNT(*)                                   AS shipment_count,
         AVG(total_cost / NULLIF(weight_lbs, 0))   AS avg_cpl
     FROM SHIPMENTS
     GROUP BY 1, 2, 3
-    HAVING COUNT(*) >= 5   -- ignore sparse lane×week cells
 ),
-rolling AS (
+prior_week_counts AS (
     SELECT
         week_start,
         lane_id,
         mode,
-        avg_cpl,
-        AVG(avg_cpl) OVER (
+        COUNT(*) OVER (
             PARTITION BY lane_id, mode
             ORDER BY week_start
-            ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
-        ) AS rolling_4wk_avg
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ) AS prior_weeks
     FROM weekly_avg
 ),
-flagged_weeks AS (
-    SELECT week_start, lane_id, mode
-    FROM rolling
-    WHERE rolling_4wk_avg IS NOT NULL
-      AND ABS(avg_cpl - rolling_4wk_avg) / NULLIF(rolling_4wk_avg, 0) > 0.20
+rolling AS (
+    SELECT
+        w.week_start,
+        w.lane_id,
+        w.mode,
+        w.shipment_count,
+        w.avg_cpl,
+        AVG(w.avg_cpl) OVER (
+            PARTITION BY w.lane_id, w.mode
+            ORDER BY w.week_start
+            ROWS BETWEEN 4 PRECEDING AND 1 PRECEDING
+        ) AS rolling_4wk_avg,
+        p.prior_weeks
+    FROM weekly_avg w
+    JOIN prior_week_counts p
+        ON w.week_start = p.week_start
+        AND w.lane_id = p.lane_id
+        AND w.mode = p.mode
 )
 SELECT
-    'MAVG_' || s.shipment_id,
-    s.shipment_id,
-    'MOVING_AVG',
-    s.lane_id,
-    s.mode,
-    s.origin_city,
-    s.total_cost,
-    NULL,
-    s.ship_date
-FROM SHIPMENTS s
-JOIN flagged_weeks fw
-    ON DATE_TRUNC('WEEK', s.ship_date) = fw.week_start
-   AND s.lane_id = fw.lane_id
-   AND s.mode = fw.mode;
+    week_start,
+    lane_id,
+    mode,
+    shipment_count,
+    avg_cpl                                           AS avg_cost_per_lb,
+    rolling_4wk_avg,
+    (avg_cpl - rolling_4wk_avg)
+        / NULLIF(rolling_4wk_avg, 0)                  AS pct_deviation,
+    CASE
+        WHEN prior_weeks >= 4
+         AND rolling_4wk_avg IS NOT NULL
+         AND ABS((avg_cpl - rolling_4wk_avg) / NULLIF(rolling_4wk_avg, 0)) > 0.20
+        THEN 1
+        ELSE 0
+    END                                               AS is_anomalous
+FROM rolling;
 
 
 -- Verify
 SELECT flag_type, COUNT(*) AS flags FROM ANOMALY_FLAGS GROUP BY flag_type ORDER BY 1;
-SELECT COUNT(DISTINCT shipment_id) AS unique_flagged_shipments FROM ANOMALY_FLAGS;
