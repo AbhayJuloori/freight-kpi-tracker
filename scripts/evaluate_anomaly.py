@@ -19,21 +19,23 @@ import pandas as pd
 PROCESSED_DIR = Path('data/processed')
 
 
-def compute_zscore_flags(df: pd.DataFrame, threshold: float = 2.5) -> set:
+def compute_zscore_flags(
+    df: pd.DataFrame, threshold: float = 2.5, min_count: int = 10
+) -> set:
     df = df.copy()
     df['cpl'] = df['total_cost'] / df['weight_lbs'].clip(lower=1e-6)
     stats = (
         df.groupby(['lane_id', 'mode'])['cpl']
         .agg(mean='mean', std='std', count='count')
         .reset_index()
-        .query('count >= 10')
+        .query(f'count >= {min_count}')
     )
     merged = df.merge(stats, on=['lane_id', 'mode'], how='inner')
     merged['z'] = (merged['cpl'] - merged['mean']) / merged['std'].clip(lower=1e-6)
     return set(merged.loc[merged['z'].abs() > threshold, 'shipment_id'])
 
 
-def compute_iqr_flags(df: pd.DataFrame) -> set:
+def compute_iqr_flags(df: pd.DataFrame, min_count: int = 10) -> set:
     df = df.copy()
     df['cpl'] = df['total_cost'] / df['weight_lbs'].clip(lower=1e-6)
     stats = (
@@ -44,7 +46,7 @@ def compute_iqr_flags(df: pd.DataFrame) -> set:
             count='count',
         )
         .reset_index()
-        .query('count >= 10')
+        .query(f'count >= {min_count}')
     )
     stats['lower'] = stats['q1'] - 1.5 * (stats['q3'] - stats['q1'])
     stats['upper'] = stats['q3'] + 1.5 * (stats['q3'] - stats['q1'])
