@@ -9,3 +9,4 @@ dist/
 .DS_Store
 *.parquet
 notebooks/.ipynb_checkpoints/
+.worktrees/
