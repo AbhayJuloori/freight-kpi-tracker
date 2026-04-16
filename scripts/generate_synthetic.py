@@ -136,7 +136,7 @@ def generate_carrier_rates(rng, lane_weights=None):
     n_lanes_per_group = min(30, len(all_lanes))
 
     if lane_weights is not None:
-        weights = np.array([lane_weights.get(l, 0) for l in all_lanes], dtype=float)
+        weights = np.array([lane_weights.get(lane_id, 0) for lane_id in all_lanes], dtype=float)
         weights += 1.0
         weights /= weights.sum()
     else:
