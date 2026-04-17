@@ -3,6 +3,7 @@ Load processed CSVs into Snowflake using PUT + COPY INTO.
 Requires .env with SNOWFLAKE_* credentials.
 Usage: python scripts/load_snowflake.py
 """
+import json
 import os
 from pathlib import Path
 
@@ -15,9 +16,10 @@ PROCESSED_DIR = Path("data/processed")
 SQL_DIR = Path("sql")
 
 TABLES = [
-    ("FUEL_SURCHARGES", PROCESSED_DIR / "fuel_surcharges.csv"),
-    ("CARRIER_RATES",   PROCESSED_DIR / "carrier_rates.csv"),
-    ("SHIPMENTS",       PROCESSED_DIR / "shipments.csv"),
+    ("GENERATION_RUNS",  None),                               # inserted from metadata, not CSV
+    ("FUEL_SURCHARGES",  PROCESSED_DIR / "fuel_surcharges.csv"),
+    ("CARRIER_RATES",    PROCESSED_DIR / "carrier_rates.csv"),
+    ("SHIPMENTS",        PROCESSED_DIR / "shipments.csv"),
 ]
 
 
@@ -38,6 +40,26 @@ def run_sql_file(cursor, path: Path):
     statements = [s.strip() for s in sql.split(";") if s.strip()]
     for stmt in statements:
         cursor.execute(stmt)
+
+
+def insert_generation_run(cursor, metadata: dict) -> None:
+    cursor.execute(
+        """
+        INSERT INTO GENERATION_RUNS
+            (run_id, generated_at, seed_source, faf5_file, n_shipments, n_anomalies, anomaly_rate)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            metadata["run_id"],
+            metadata["generated_at"],
+            metadata["seed_source"],
+            metadata.get("faf5_file"),
+            metadata["n_shipments"],
+            metadata["n_anomalies"],
+            metadata["anomaly_rate"],
+        ),
+    )
+    print(f"  GENERATION_RUNS: inserted run_id={metadata['run_id']}")
 
 
 def stage_and_copy(cursor, table_name: str, csv_path: Path):
@@ -65,32 +87,39 @@ def stage_and_copy(cursor, table_name: str, csv_path: Path):
 
 
 def main():
+    metadata_path = PROCESSED_DIR / "generation_metadata.json"
+    if not metadata_path.exists():
+        raise FileNotFoundError(
+            f"{metadata_path} not found — run generate_synthetic.py first"
+        )
+    metadata = json.loads(metadata_path.read_text())
+
     print("Connecting to Snowflake...")
     conn = get_conn()
     cursor = conn.cursor()
 
-    # Bootstrap schema
     print("\nCreating schema...")
     run_sql_file(cursor, SQL_DIR / "01_ddl_schema.sql")
 
-    # Load tables
     print("\nLoading tables...")
+    insert_generation_run(cursor, metadata)
+
     for table_name, csv_path in TABLES:
+        if csv_path is None:
+            continue
         if not csv_path.exists():
             raise FileNotFoundError(f"{csv_path} not found — run generate_synthetic.py first")
         stage_and_copy(cursor, table_name, csv_path)
 
-    # Run anomaly detection
     print("\nRunning anomaly detection...")
     run_sql_file(cursor, SQL_DIR / "02_anomaly_detection.sql")
 
-    # Create Power BI views
-    print("\nCreating Power BI views...")
+    print("\nCreating views...")
     run_sql_file(cursor, SQL_DIR / "03_views_powerbi.sql")
 
     cursor.close()
     conn.close()
-    print("\nDone. Snowflake is ready for Power BI.")
+    print(f"\nDone. seed_source={metadata['seed_source']} run_id={metadata['run_id']}")
 
 
 if __name__ == "__main__":
