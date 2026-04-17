@@ -93,6 +93,23 @@ def test_modes_valid():
     assert set(ships["mode"].unique()).issubset(set(MODES))
 
 
+def test_mode_probs_drive_shipment_sampling():
+    fuel = generate_fuel_surcharges()
+    rates = generate_carrier_rates(_make_rng())
+    mode_probs = np.array([0.7, 0.2, 0.1])
+    ships, _ = generate_shipments(rates, fuel, 10_000, _make_rng(), mode_probs, "test-run-id")
+
+    observed = (
+        ships["mode"]
+        .value_counts(normalize=True)
+        .reindex(MODES, fill_value=0.0)
+        .to_numpy()
+    )
+    assert np.all(np.abs(observed - mode_probs) < 0.03), (
+        f"Observed mode distribution {observed} does not track requested probabilities {mode_probs}"
+    )
+
+
 def test_on_time_flag_binary():
     fuel = generate_fuel_surcharges()
     rates = generate_carrier_rates(_make_rng())
