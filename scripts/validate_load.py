@@ -30,8 +30,18 @@ def get_conn():
 def check(cursor, label: str, query: str, expected=None):
     cursor.execute(query)
     result = cursor.fetchone()[0]
-    status = "OK" if (expected is None or result >= expected) else "WARN"
-    print(f"  [{status}] {label}: {result:,}" + (f" (expected >= {expected:,})" if expected else ""))
+    if expected is None:
+        is_null_check = label.startswith("NULL ")
+        if is_null_check:
+            status = "OK" if result == 0 else "WARN"
+            expectation = " (expected 0)"
+        else:
+            status = "OK" if result not in (None, 0, 0.0, "") else "WARN"
+            expectation = " (expected non-zero/non-empty result)"
+    else:
+        status = "OK" if result >= expected else "WARN"
+        expectation = f" (expected >= {expected:,})"
+    print(f"  [{status}] {label}: {result:,}{expectation}")
     return result
 
 
@@ -42,10 +52,12 @@ def main():
     print("\n=== Row Counts ===")
     for table, min_rows in EXPECTED_ROWS.items():
         check(cursor, table, f"SELECT COUNT(*) FROM {table}", min_rows)
-    check(cursor, "ANOMALY_FLAGS", "SELECT COUNT(*) FROM ANOMALY_FLAGS")
+    check(cursor, "GENERATION_RUNS", "SELECT COUNT(*) FROM GENERATION_RUNS", 1)
+    check(cursor, "LANE_WEEK_TRENDS", "SELECT COUNT(*) FROM LANE_WEEK_TRENDS", 1)
+    check(cursor, "ANOMALY_FLAGS", "SELECT COUNT(*) FROM ANOMALY_FLAGS", 1)
 
     print("\n=== Null Checks (SHIPMENTS) ===")
-    for col in ["shipment_id", "ship_date", "mode", "carrier_id", "total_cost"]:
+    for col in ["shipment_id", "ship_date", "mode", "carrier_id", "total_cost", "run_id"]:
         check(cursor, f"NULL {col}", f"SELECT COUNT(*) FROM SHIPMENTS WHERE {col} IS NULL", None)
 
     print("\n=== Anomaly Flag Rate ===")

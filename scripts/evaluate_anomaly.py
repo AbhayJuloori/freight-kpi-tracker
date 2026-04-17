@@ -163,6 +163,7 @@ def main() -> None:
         method_flags = {"ZSCORE": zscore_ids, "IQR": iqr_ids}
     else:
         flags_df = pd.read_csv(args.flags)
+        flags_df.columns = flags_df.columns.str.lower()
         method_flags = {
             method: set(grp["shipment_id"])
             for method, grp in flags_df.groupby("flag_type")

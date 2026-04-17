@@ -206,8 +206,13 @@ def generate_shipments(
     end = pd.Timestamp("2024-06-30")
     dates = pd.to_datetime(rng.integers(start.value, end.value, n))
 
-    # Sample from rates_df rows (with replacement — multiple shipments per rate row is fine)
-    rate_idx = rng.integers(0, len(rates_df), n)
+    # Sample from rates_df rows using FAF5-derived mode weights.
+    mode_to_prob = {mode: mode_probs[i] for i, mode in enumerate(MODES)}
+    rate_weights = rates_df["mode"].map(mode_to_prob).to_numpy(dtype=float)
+    if np.isnan(rate_weights).any() or rate_weights.sum() <= 0:
+        raise ValueError("rates_df contains unsupported modes or mode_probs sum to zero")
+    rate_weights /= rate_weights.sum()
+    rate_idx = rng.choice(len(rates_df), size=n, replace=True, p=rate_weights)
     sampled = rates_df.iloc[rate_idx].reset_index(drop=True)
 
     # Assign origin/dest cities consistent with lane_id
