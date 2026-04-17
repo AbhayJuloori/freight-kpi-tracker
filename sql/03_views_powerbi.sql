@@ -76,3 +76,43 @@ SELECT
     MIN(ship_date)                                      AS data_start_date,
     MAX(ship_date)                                      AS data_end_date
 FROM SHIPMENTS;
+
+-- KPI 6: Underperforming lanes — disproportionate cost overruns + late deliveries
+CREATE OR REPLACE VIEW VW_LANE_RISK AS
+WITH lane_stats AS (
+    SELECT
+        s.lane_id,
+        COUNT(*)                                                AS total_shipments,
+        SUM(s.is_anomaly_flag)                                  AS anomaly_count,
+        SUM(s.is_anomaly_flag)::FLOAT / NULLIF(COUNT(*), 0)    AS anomaly_rate,
+        SUM(CASE WHEN s.on_time_flag = 0 THEN 1 ELSE 0 END)    AS late_count,
+        SUM(CASE WHEN s.on_time_flag = 0 THEN 1 ELSE 0 END)::FLOAT
+            / NULLIF(COUNT(*), 0)                               AS late_rate,
+        AVG(CASE WHEN s.is_anomaly_flag = 0 THEN s.total_cost END) AS avg_normal_cost,
+        AVG(CASE WHEN s.is_anomaly_flag = 1 THEN s.total_cost END) AS avg_anomalous_cost
+    FROM (
+        SELECT s.*, CASE WHEN af.shipment_id IS NOT NULL THEN 1 ELSE 0 END AS is_anomaly_flag
+        FROM SHIPMENTS s
+        LEFT JOIN (SELECT DISTINCT shipment_id FROM ANOMALY_FLAGS) af
+            ON s.shipment_id = af.shipment_id
+    ) s
+    GROUP BY lane_id
+    HAVING COUNT(*) >= 50
+)
+SELECT
+    lane_id,
+    total_shipments,
+    anomaly_count,
+    ROUND(anomaly_rate * 100, 2)            AS anomaly_rate_pct,
+    late_count,
+    ROUND(late_rate * 100, 2)               AS late_rate_pct,
+    ROUND(avg_normal_cost, 2)               AS avg_normal_cost,
+    ROUND(avg_anomalous_cost, 2)            AS avg_anomalous_cost,
+    ROUND((avg_anomalous_cost - avg_normal_cost)
+        / NULLIF(avg_normal_cost, 0) * 100, 1) AS cost_overrun_pct,
+    ROUND(
+        0.4 * anomaly_rate + 0.3 * late_rate +
+        0.3 * LEAST((avg_anomalous_cost - avg_normal_cost) / NULLIF(avg_normal_cost, 0), 10) / 10
+    , 4)                                    AS risk_score
+FROM lane_stats
+ORDER BY risk_score DESC;
