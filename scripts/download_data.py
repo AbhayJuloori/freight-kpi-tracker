@@ -14,7 +14,7 @@ from tqdm import tqdm
 load_dotenv()
 
 RAW_DIR = Path("data/raw")
-FAF5_URL = "https://faf.ornl.gov/faf5/data/faf5_4_dot1.zip"
+FAF5_URL = "https://faf.ornl.gov/faf5/Data/Download_Files/FAF5.7.1_2018-2024.zip"
 YEARS = {2022, 2023, 2024}
 
 
@@ -45,18 +45,13 @@ def main():
     df = download_faf5(FAF5_URL)
     print(f"Full dataset: {len(df):,} rows | columns: {list(df.columns)}")
 
-    # FAF5 year column
-    year_col = next((c for c in df.columns if c.lower() == "year"), None)
-    if year_col is None:
-        raise ValueError(f"No 'year' column found. Available: {list(df.columns)}")
-
-    df_filtered = df[df[year_col].isin(YEARS)].copy()
-    print(f"Filtered to {YEARS}: {len(df_filtered):,} rows")
-    print(f"Mode distribution:\n{df_filtered['dms_mode'].value_counts()}")
+    # FAF5.7.1 uses wide format — years are columns (tons_2022, tons_2023 etc.), not rows.
+    # generate_synthetic.py only needs fr_orig, fr_dest, dms_mode — save the full file.
+    print(f"Mode distribution:\n{df['dms_mode'].value_counts()}")
 
     out_path = RAW_DIR / "faf5_2022_2024.csv"
-    df_filtered.to_csv(out_path, index=False)
-    print(f"Saved to {out_path}")
+    df.to_csv(out_path, index=False)
+    print(f"Saved to {out_path} ({len(df):,} rows)")
 
 
 if __name__ == "__main__":

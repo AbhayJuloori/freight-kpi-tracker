@@ -96,7 +96,8 @@ def load_faf5_distributions(faf5_path: Path) -> tuple[dict[str, int], np.ndarray
         lane_weights: dict mapping "STATE-STATE" → OD pair count
         mode_probs: array of shape (3,) for [PARCEL, LTL, FTL]
     """
-    df = pd.read_csv(faf5_path, usecols=["fr_orig", "fr_dest", "dms_mode"], low_memory=False)
+    # FAF5.7.1 uses dms_orig/dms_dest for domestic zone codes (fr_orig/fr_dest are for foreign trade)
+    df = pd.read_csv(faf5_path, usecols=["dms_orig", "dms_dest", "dms_mode"], low_memory=False)
 
     def zone_to_state(zone: object) -> Optional[str]:
         try:
@@ -105,8 +106,8 @@ def load_faf5_distributions(faf5_path: Path) -> tuple[dict[str, int], np.ndarray
         except (ValueError, TypeError):
             return None
 
-    df["orig_state"] = df["fr_orig"].apply(zone_to_state)
-    df["dest_state"] = df["fr_dest"].apply(zone_to_state)
+    df["orig_state"] = df["dms_orig"].apply(zone_to_state)
+    df["dest_state"] = df["dms_dest"].apply(zone_to_state)
     df = df.dropna(subset=["orig_state", "dest_state"])
 
     # Lane weights: count OD state-pair flows
@@ -116,7 +117,7 @@ def load_faf5_distributions(faf5_path: Path) -> tuple[dict[str, int], np.ndarray
     }
 
     # Mode distribution: aggregate dms_mode → PARCEL/LTL/FTL
-    mode_series = df["dms_mode"].map(FAF5_MODE_MAP).dropna()
+    mode_series = df["dms_mode"].astype(float).astype(int).map(FAF5_MODE_MAP).dropna()
     mode_counts = mode_series.value_counts()
     mode_probs = np.array(
         [mode_counts.get(m, 0) for m in MODES], dtype=float
