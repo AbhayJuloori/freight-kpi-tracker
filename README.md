@@ -1,150 +1,132 @@
-# Freight Cost Anomaly & KPI Tracker
+# Freight KPI Tracker v2
 
-End-to-end freight analytics pipeline — real FAF5 OD-pair distributions seed synthetic shipment generation, dual-method anomaly detection flags cost spikes, and an interactive Dash dashboard surfaces lane-level risk.
+Freight v2 is a portable freight-operations investigation system. It turns one validated
+network snapshot into reproducible cost baselines, normalized exception evidence, held-out
+evaluation, and a ranked operational review queue. The public portfolio consumes a bounded
+static evidence bundle; it does not require Snowflake, Power BI, a hosted database, an API key,
+or a live Python service.
 
----
+The original Snowflake/Power BI implementation remains documented as project history. It is not
+the current runtime.
 
-## Architecture
+## What the system does
 
-```
-FAF5.7.1 (2.5M real freight flow records)
-    └─▶ scripts/generate_synthetic.py   ──  FAF5 OD pairs → lane weights + mode distribution
-            │  CARRIER_RATES generated first (unique PKs)
-            │  Shipments sampled from CARRIER_RATES (100% join coverage)
-            │  run_id + generation_metadata.json written on every run
-            ▼
-    data/processed/  (shipments.csv · carrier_rates.csv · fuel_surcharges.csv
-                      anomaly_ground_truth.parquet · generation_metadata.json)
-            │
-            ├─▶ scripts/load_snowflake.py   ──  PUT + COPY INTO Snowflake
-            │         FREIGHT_DB.LOGISTICS
-            │         ├── GENERATION_RUNS      (run provenance)
-            │         ├── SHIPMENTS            (75k rows · base_rate_per_cwt · run_id FK)
-            │         ├── CARRIER_RATES        (2,250 rates · unique carrier×mode×lane PKs)
-            │         ├── FUEL_SURCHARGES      (130 weeks · EIA diesel trajectory)
-            │         ├── ANOMALY_FLAGS        (Z-Score + IQR · shipment-level)
-            │         └── LANE_WEEK_TRENDS     (4-week rolling signal · lane-level)
-            │                   │
-            │                   └─▶ sql/02_anomaly_detection.sql
-            │
-            ├─▶ scripts/evaluate_anomaly.py ──  precision / recall / F1 / FPR per method
-            └─▶ scripts/dashboard.py        ──  Dash app  ·  localhost:8050
+```text
+FAF5 lane/mode distribution prior or deterministic test fixture
+  -> time-versioned carrier rates + weekly fuel scenario + normal shipments
+  -> isolated typed anomaly injection and separate ground truth
+  -> immutable Parquet/JSON run with SHA-256 manifest
+  -> baseline-only expected-cost model
+  -> calibration-selected detectors
+  -> held-out evaluation
+  -> transparent alert prioritization
+  -> validated static portfolio evidence
 ```
 
----
+The analytical windows are fixed:
 
-## Data Generation
+- baseline: 2023-01-02 through 2023-12-31;
+- calibration: 2024-01-01 through 2024-03-31;
+- held-out evaluation: 2024-04-01 through 2024-06-30.
 
-| Property | Value |
-|----------|-------|
-| Source | FAF5.7.1 — 2,494,901 real domestic freight flow records |
-| OD pairs used | 484 domestic state-pair lanes |
-| Mode distribution | Derived from FAF5 `dms_mode` field (not hardcoded) |
-| Shipments generated | 75,000 |
-| Anomalies injected | 5,231 (7.0%) — ground truth stored in `anomaly_ground_truth.parquet` |
-| Join coverage | 100% — every shipment `(carrier_id, mode, lane_id)` exists in CARRIER_RATES |
-| Provenance | `run_id` (UUID4) propagated to every row and artifact |
-| `seed_source` | `FAF5` |
+Every carrier/lane/mode rate calendar has six contiguous effective periods. Every shipment must
+resolve exactly one active rate version and one mode/week fuel record. Missing, overlapping, or
+duplicate temporal keys fail validation.
 
----
+## Accepted evidence run
 
-## Anomaly Detection Results
+The accepted public run is `cc024261-003c-4461-83f0-71e041694a54`, generated from the local
+`faf5_2022_2024.csv` distribution source and 75,000 synthetic shipment invoices. The source file
+and every run artifact are checksum-bound in the manifest.
 
-![Evaluation Metrics](docs/images/eval_metrics.png)
+Held-out evaluation at the calibration-selected operating point:
 
-| Method | Precision | Recall | F1 | FPR | Flagged |
-|--------|----------:|-------:|---:|----:|--------:|
-| Z-Score | **99.9%** | 72.9% | 0.843 | 0.0% | 3,814 |
-| IQR | 86.1% | **99.8%** | **0.924** | 1.2% | 6,062 |
-| **Combined** | **86.1%** | **99.8%** | **0.924** | **1.2%** | **6,062** |
+| Metric | Result |
+|---|---:|
+| Evaluation shipments | 12,500 |
+| Precision | 68.4% |
+| Recall | 77.4% |
+| F1 | 0.726 |
+| False-positive rate | 7.33% |
+| Review volume | 2,405 (19.24%) |
+| False negatives | 480 |
+| Estimated excess-cost coverage | 100.0% after floating-point rounding |
 
-- **Z-Score** (by lane × mode, |z| > 2.5) — near-zero false positives; conservative high-confidence alerts
-- **IQR** (1.5×IQR fence, by lane × mode) — comprehensive coverage; catches 99.8% of all anomalies
-- **Combined** — union of both methods; headline metric for operational use
+These are exception-detection metrics, not predicted-cause classification metrics. Per-anomaly
+tables are one-vs-rest. The selected configuration was chosen only from calibration data using
+the recorded cost-aware rule; evaluation metrics were computed afterward.
 
----
+## Leakage and aggregation controls
 
-## Top 3 Underperforming Lanes
+- Normal operations are constructed before anomaly injection.
+- Operational shipments never contain `is_anomaly`, cause labels, or generated `expected_*`
+  counterfactual columns.
+- Cost anomalies cannot mechanically alter service outcomes; only the typed service injector can.
+- Baseline statistics are fit on the baseline window only and carry a tamper-detecting fingerprint.
+- Rolling signals use strictly preceding observed weeks.
+- Evaluation rows cannot change baseline or calibration assignments.
+- The evaluator requires the exact shipment x five-detector matrix and fixed method-family
+  semantics.
+- Shipment KPIs deduplicate `shipment_id`; group evidence deduplicates `evidence_unit_id`; method
+  agreement counts distinct method families. The 75,000/78,814 historical join-fan-out failure is
+  preserved as a regression test.
 
-![Lane Risk](docs/images/lane_risk.png)
+See [methodology](docs/methodology.md), [model card](docs/model-card.md), and
+[known v1 defects](docs/history/known-v1-defects.md).
 
-Three lanes responsible for a disproportionate share of cost overruns and late deliveries (≥50 shipments, composite risk score = 40% anomaly rate + 30% late rate + 30% normalised cost overrun):
+## Fuel and source boundary
 
-| Lane | Shipments | Anomaly Rate | Late Rate | Avg Normal Cost | Avg Anomalous Cost | Cost Overrun |
-|------|----------:|-------------:|----------:|----------------:|-------------------:|-------------:|
-| **CO-PA** | 65 | 15.4% | 10.8% | $148 | $1,598 | **+979%** |
-| **IN-AZ** | 78 | 15.4% | 11.5% | $130 | $810 | **+524%** |
-| **AZ-KY** | 122 | 15.6% | 15.6% | $261 | $943 | **+261%** |
+FAF5 data seeds supported lane and mode distributions. It does not provide the synthetic carrier
+invoices displayed by the project. `tons_2024` is a static scenario prior for the full synthetic
+run, not a time-varying historical predictor.
 
-CO-PA alone shows a 10× cost spike on anomalous shipments — the highest overrun in the dataset.
+Fuel is a deterministic synthetic weekly diesel-index curve with smooth seasonal and trend
+components. It contains 78 distinct weekly values per mode and is explicitly **not observed EIA
+data**. The exact curve basis is stored on every fuel row. A future observed-data adapter would
+need its own source checksum before the project could make an observed-fuel claim.
 
----
+## Install and run
 
-## Anomaly Flag Breakdown by Lane
-
-![Anomaly Breakdown](docs/images/anomaly_breakdown.png)
-
-Top 10 lanes by flag volume, split by detection method. Lanes caught by both methods represent the highest-confidence anomalies.
-
----
-
-## Snowflake Schema
-
-**Database:** `FREIGHT_DB` · **Schema:** `LOGISTICS`
-
-| Table | Rows | Purpose |
-|-------|-----:|---------|
-| `GENERATION_RUNS` | 1 | Run provenance — `run_id`, `seed_source`, `generated_at` |
-| `SHIPMENTS` | 75,000 | Core fact table — `base_rate_per_cwt`, `base_cost`, `run_id` FK |
-| `CARRIER_RATES` | 2,250 | Rate dimension — unique `(carrier_id, mode, lane_id)` PKs |
-| `FUEL_SURCHARGES` | 130 | Weekly EIA diesel trajectory → `surcharge_pct` |
-| `ANOMALY_FLAGS` | 9,876 | Shipment-level flags — `ZSCORE` and `IQR` methods only |
-| `LANE_WEEK_TRENDS` | 1,523 | Lane-week rolling 4-week deviation signal — `is_anomalous` flag |
-
-Power BI views: `sql/03_views_powerbi.sql` — 6 pre-built views covering carrier scorecard, cost by region, anomaly rate, executive summary, and lane risk. Exported CSVs ready for Power BI import: `powerbi/data/`.
-
----
-
-## Stack
-
-| Layer | Tools |
-|-------|-------|
-| Data generation | Python 3.9, pandas, numpy, FAF5.7.1 |
-| Warehouse | Snowflake (RSA key-pair auth) |
-| Anomaly detection | Z-Score + IQR (SQL + Python) |
-| Evaluation | Custom precision/recall/F1/FPR framework |
-| Dashboard | Dash, Plotly, dash-bootstrap-components |
-| Testing | pytest — 25 tests (unit + integration + regression) |
-
----
-
-## Usage
+Requires Python 3.11 or 3.12.
 
 ```bash
-# 1. Setup
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # fill in Snowflake credentials
+make install
+make test
+make lint
 
-# 2. Full pipeline
-make download    # fetch FAF5.7.1 (~192 MB)
-make generate    # seed from FAF5 → shipments + metadata
-make load        # PUT + COPY INTO Snowflake
-make evaluate    # precision/recall/F1 report
-make dashboard   # Dash app at http://localhost:8050
+# Small deterministic fixture
+make fixture
 
-# 3. Run tests
-make test        # 25 tests
+# Full FAF5-seeded immutable run
+.venv-v2/bin/freight-v2 build \
+  --seed-source FAF5 \
+  --faf5-path data/raw/faf5_2022_2024.csv \
+  --rows 75000 \
+  --output artifacts/runs
+
+# Accept, validate, and export one run
+.venv-v2/bin/freight-v2 accept --artifact-root artifacts/runs --latest
+.venv-v2/bin/freight-v2 validate --artifact-root artifacts/runs --run accepted
+make export-portfolio \
+  PORTFOLIO_DATA='/absolute/path/to/portfolio-codex/public/data/freight/v2'
 ```
 
----
+New builds are immutable and refuse to overwrite an existing run. Public export is staged and
+validated before atomically replacing the exact target bundle.
 
-## Tests
+## Current and historical stack
 
-```
-tests/test_generate_synthetic.py   — 15 unit tests (schema, join coverage, mode distribution, run_id)
-tests/test_integration.py          —  7 end-to-end tests (500-shipment fixture, anomaly metrics)
-tests/test_script_regressions.py   —  3 regression tests (uppercase CSV, null checks, new tables)
-```
+Current: Python 3.11, pandas, NumPy, PyArrow/Parquet, DuckDB as an optional embedded analytical
+dependency, pytest, and Ruff. The public interface is a statically hosted Next.js application.
 
-All 25 passing.
+Historical: Snowflake warehousing, SQL analytical views, Power BI-ready extracts, and a Dash
+dashboard. The expired trial account and removed key are not runtime requirements. See
+[historical architecture](docs/history/snowflake-powerbi.md).
+
+## Limitations
+
+- Shipment invoices, carrier behavior, rate schedules, fuel history, and anomalies are synthetic.
+- FAF5 contributes distribution priors, not observed shipment labels or invoices.
+- The public snapshot is static and supports three prevalidated sensitivity states.
+- Detector flags identify review-worthy exceptions; they do not prove billing intent or causality.
+- Session decisions in the portfolio are local and reset on reload.

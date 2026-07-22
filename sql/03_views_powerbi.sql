@@ -48,18 +48,30 @@ GROUP BY 1, 2, 3;
 
 -- KPI 4: Carrier performance scorecard (all-time composite)
 CREATE OR REPLACE VIEW VW_CARRIER_SCORECARD AS
+WITH flagged_shipments AS (
+    -- ANOMALY_FLAGS can contain multiple detector rows for one shipment.
+    -- Collapse to shipment grain before joining to avoid multiplying spend,
+    -- service, volume, and average-cost measures.
+    SELECT DISTINCT shipment_id
+    FROM ANOMALY_FLAGS
+),
+shipment_grain AS (
+    SELECT
+        s.*,
+        CASE WHEN af.shipment_id IS NOT NULL THEN 1 ELSE 0 END AS is_flagged
+    FROM SHIPMENTS s
+    LEFT JOIN flagged_shipments af ON s.shipment_id = af.shipment_id
+)
 SELECT
-    s.carrier_id,
-    s.mode,
+    carrier_id,
+    mode,
     COUNT(*)                                            AS total_shipments,
-    SUM(s.on_time_flag)::FLOAT / NULLIF(COUNT(*), 0)   AS on_time_rate,
-    AVG(s.total_cost)                                  AS avg_cost,
-    AVG(s.total_cost / NULLIF(s.weight_lbs, 0))        AS avg_cost_per_lb,
-    COUNT(DISTINCT af.shipment_id)::FLOAT
-        / NULLIF(COUNT(*), 0)                           AS anomaly_rate,
-    SUM(s.total_cost)                                  AS total_spend
-FROM SHIPMENTS s
-LEFT JOIN ANOMALY_FLAGS af ON s.shipment_id = af.shipment_id
+    SUM(on_time_flag)::FLOAT / NULLIF(COUNT(*), 0)     AS on_time_rate,
+    AVG(total_cost)                                    AS avg_cost,
+    AVG(total_cost / NULLIF(weight_lbs, 0))            AS avg_cost_per_lb,
+    SUM(is_flagged)::FLOAT / NULLIF(COUNT(*), 0)       AS anomaly_rate,
+    SUM(total_cost)                                    AS total_spend
+FROM shipment_grain
 GROUP BY 1, 2;
 
 

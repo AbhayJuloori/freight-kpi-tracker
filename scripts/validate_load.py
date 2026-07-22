@@ -1,26 +1,60 @@
-"""
-Post-load validation: row counts, null checks, anomaly flag rate sanity check.
-Usage: python scripts/validate_load.py
-"""
+"""Legacy post-load validation for the historical Snowflake v1 deployment."""
+
 import os
+from pathlib import Path
 
-import snowflake.connector
-from dotenv import load_dotenv
-
-load_dotenv()
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+LEGACY_WARNING = (
+    "LEGACY SNOWFLAKE PATH: this command validates the retired v1 warehouse, "
+    "not the portable Freight v2 engine."
+)
 
 EXPECTED_ROWS = {
     "SHIPMENTS": 75_000,
-    "FUEL_SURCHARGES": 100,   # ~130 weeks, allow some variance
-    "CARRIER_RATES": 1_000,   # 25 carriers × 3 modes × N lanes
+    "FUEL_SURCHARGES": 100,  # ~130 weeks, allow some variance
+    "CARRIER_RATES": 1_000,  # 25 carriers × 3 modes × N lanes
 }
 
 
+def _load_optional_dotenv() -> None:
+    try:
+        from dotenv import load_dotenv
+    except ModuleNotFoundError:
+        return
+    load_dotenv()
+
+
+def _private_key_path() -> Path:
+    configured = os.environ.get("SNOWFLAKE_PRIVATE_KEY_FILE")
+    if not configured:
+        raise RuntimeError(
+            "Legacy Snowflake access requires an explicit SNOWFLAKE_PRIVATE_KEY_FILE path"
+        )
+    configured_path = Path(configured).expanduser()
+    if not configured_path.is_absolute():
+        raise ValueError("SNOWFLAKE_PRIVATE_KEY_FILE must be an absolute path")
+    path = configured_path.resolve()
+    if path.is_relative_to(REPOSITORY_ROOT):
+        raise ValueError("Snowflake private keys must be stored outside this repository")
+    if path.suffix.lower() not in {".p8", ".pem"}:
+        raise ValueError("Snowflake private key must use a .p8 or .pem extension")
+    if not path.is_file():
+        raise FileNotFoundError(f"Configured Snowflake private key does not exist: {path}")
+    return path
+
+
 def get_conn():
+    key_path = _private_key_path()
+    try:
+        import snowflake.connector
+    except ModuleNotFoundError as error:
+        raise RuntimeError(
+            "Legacy Snowflake support is not installed; run `pip install -e '.[legacy]'`"
+        ) from error
     return snowflake.connector.connect(
         account=os.environ["SNOWFLAKE_ACCOUNT"],
         user=os.environ["SNOWFLAKE_USER"],
-        private_key_file=os.environ.get("SNOWFLAKE_PRIVATE_KEY_FILE", "rsa_key.p8"),
+        private_key_file=str(key_path),
         warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
         database=os.environ.get("SNOWFLAKE_DATABASE", "FREIGHT_DB"),
         schema=os.environ.get("SNOWFLAKE_SCHEMA", "LOGISTICS"),
@@ -46,6 +80,8 @@ def check(cursor, label: str, query: str, expected=None):
 
 
 def main():
+    print(LEGACY_WARNING)
+    _load_optional_dotenv()
     conn = get_conn()
     cursor = conn.cursor()
 
