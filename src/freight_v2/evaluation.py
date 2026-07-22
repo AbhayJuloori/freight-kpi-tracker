@@ -23,25 +23,35 @@ from freight_v2.detection import (
 
 EVALUATION_WINDOWS = frozenset({"calibration", "evaluation"})
 MAX_GRID_SIZE = 25
+REVIEW_TRIGGER_METHODS = frozenset(DETECTION_METHODS).difference({"lane_week_deviation"})
+CALIBRATION_PRECISION_FLOOR = 0.90
+CALIBRATION_RECALL_FLOOR = 0.95
+CALIBRATION_FPR_CEILING = 0.01
 SELECTION_RULE = (
-    "Maximize calibration utility = 0.60 excess-cost coverage + 0.25 recall "
-    "- 0.10 false-positive rate - 0.05 review rate; break ties by coverage, recall, "
-    "lower false-positive rate, lower review volume, then config ID."
+    "On calibration data, require precision >= 0.90, recall >= 0.95, and false-positive "
+    "rate <= 0.01; among passing configurations prefer the shortest service response window, "
+    "then maximize utility = 0.60 excess-cost coverage + 0.25 recall - 0.10 false-positive "
+    "rate - 0.05 review rate. Lane-week deviation remains contextual evidence and does not "
+    "independently send a shipment to review."
 )
 
 DEFAULT_SENSITIVITY_GRID = (
-    DetectorConfig(
-        robust_threshold=3.0,
-        iqr_multiplier=1.25,
-        lane_week_threshold=2.5,
-        service_drop_threshold=0.10,
-    ),
-    DetectorConfig(),
     DetectorConfig(
         robust_threshold=4.0,
         iqr_multiplier=2.0,
         lane_week_threshold=3.5,
         service_drop_threshold=0.20,
+        service_current_observed_weeks=2,
+        minimum_service_current_shipments=6,
+    ),
+    DetectorConfig(),
+    DetectorConfig(
+        robust_threshold=4.5,
+        iqr_multiplier=2.5,
+        lane_week_threshold=4.0,
+        service_drop_threshold=0.25,
+        service_current_observed_weeks=4,
+        minimum_service_current_shipments=10,
     ),
 )
 
@@ -78,6 +88,7 @@ _METHOD_CONTRACTS = {
     "iqr": ("cost_reconciliation", "baseline_shipments"),
     "lane_week_deviation": ("lane_cost_trend", "prior_observed_weeks"),
     "service_deterioration": ("carrier_service_trend", "prior_observed_weeks"),
+    "service_sla_breach": ("service_reconciliation", "rules_evaluated"),
     "data_quality": ("data_quality", "rules_evaluated"),
 }
 
@@ -120,6 +131,7 @@ def evaluation_payload(run_id: str, result: EvaluationResult) -> dict[str, Any]:
         "row_count": len(sensitivity),
         "selected_config": asdict(result.selected_config),
         "selection_rule": result.selection_rule,
+        "review_trigger_methods": sorted(REVIEW_TRIGGER_METHODS),
         "overall": dict(result.overall),
         "by_anomaly_type": by_type,
         "sensitivity_grid": sensitivity,
@@ -428,7 +440,12 @@ def evaluate_flags(
         how="left",
         validate="one_to_one",
     )
-    predicted_ids = set(flag_frame.loc[flag_frame["is_flagged"].eq(1), "shipment_id"])
+    predicted_ids = set(
+        flag_frame.loc[
+            flag_frame["is_flagged"].eq(1) & flag_frame["method"].isin(REVIEW_TRIGGER_METHODS),
+            "shipment_id",
+        ]
+    )
     scoped["is_predicted"] = scoped["shipment_id"].isin(predicted_ids)
     overall = _metric_row(scoped, scoped["is_anomaly"].eq(1))
     type_rows = []
@@ -521,11 +538,20 @@ def build_evaluation(
             }
         )
 
+    passing = [
+        row
+        for row in calibration_rows
+        if row["precision"] >= CALIBRATION_PRECISION_FLOOR
+        and row["recall"] >= CALIBRATION_RECALL_FLOOR
+        and row["false_positive_rate"] <= CALIBRATION_FPR_CEILING
+    ]
     ranked = sorted(
-        calibration_rows,
+        passing or calibration_rows,
         key=lambda row: (
+            row["config"].service_current_observed_weeks,
             -row["selection_score"],
             -row["excess_cost_coverage"],
+            -row["precision"],
             -row["recall"],
             row["false_positive_rate"],
             row["review_volume"],

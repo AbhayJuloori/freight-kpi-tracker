@@ -46,22 +46,26 @@ Expected invoice components are reconstructed from authoritative rate and fuel a
 segment residual statistics are fit only on baseline rows with a documented fallback hierarchy.
 The frozen model is fingerprinted, and the detector reconstructs its scored lineage before use.
 
-Five normalized detectors emit one row per shipment:
+Six normalized detectors emit one row per shipment:
 
 1. robust standardized cost residual;
 2. IQR upper fence;
 3. strictly trailing lane/mode weekly deviation;
 4. strictly trailing lane/carrier service deterioration;
-5. explicit data-quality rules.
+5. direct service-level breach for late shipments at least two days beyond the mode contract;
+6. explicit data-quality rules.
 
-Service evidence uses a multi-observed-week current window and only earlier observed weeks as its
-reference. An on-time branch attributes late rows; a transit branch attributes rows at least two
-days above the mode contract. Group rows share an evidence ID so downstream aggregation counts
-the operational event once while retaining affected shipments.
+Service-trend evidence uses a multi-observed-week current window and only earlier observed weeks
+as its reference. The direct service-level rule is a separate shipment-level reconciliation.
+Group rows share an evidence ID so downstream aggregation counts the operational event once while
+retaining affected shipments. Lane-week deviation remains review context; it does not independently
+classify every shipment in the group as a review item.
 
 ## Calibration and held-out evaluation
 
-The sensitivity grid is finite and bounded. Configuration selection uses calibration truth only:
+The sensitivity grid is finite and bounded. Configuration selection uses calibration truth only.
+Configurations must first meet precision, recall, and false-positive-rate quality gates; the
+shortest service response window that passes is preferred, then the following utility breaks ties:
 
 ```text
 utility = 0.60 * excess-cost coverage
@@ -70,8 +74,8 @@ utility = 0.60 * excess-cost coverage
         - 0.05 * review rate
 ```
 
-Deterministic tie-breakers prefer coverage, recall, lower false-positive rate, lower review
-volume, then configuration ID. Evaluation truth is used only after selection. Mutating evaluation
+Deterministic tie-breakers prefer coverage, precision, recall, lower false-positive rate, lower
+review volume, then configuration ID. Evaluation truth is used only after selection. Mutating evaluation
 labels cannot change the selected configuration or any calibration metric.
 
 Union metrics operate at shipment grain. Agreement counts distinct method families, so robust
@@ -88,8 +92,9 @@ prove exposure and distinct-family agreement are monotone when other inputs are 
 
 ## Public export
 
-The public bundle contains network aggregates, the top bounded alert queue, three deterministic
-representative investigations, the sensitivity grid, evaluation metrics, and provenance hashes.
+The public bundle contains network aggregates, the top bounded alert queue, one focused detail
+file for every public alert, three labeled representative investigations, the sensitivity grid,
+evaluation metrics, and provenance hashes.
 It excludes raw FAF5 records, ground-truth causes in operator investigation files, secrets, and
 unbounded shipment history. Every file repeats run ID and schema version and is cross-validated
 before atomic replacement.

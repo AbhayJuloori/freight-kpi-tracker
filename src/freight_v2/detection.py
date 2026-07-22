@@ -28,8 +28,11 @@ DETECTION_METHODS = (
     "iqr",
     "lane_week_deviation",
     "service_deterioration",
+    "service_sla_breach",
     "data_quality",
 )
+
+SERVICE_SLA_EXCESS_DAYS = 2
 
 REQUIRED_SCORED_COLUMNS = frozenset(
     {
@@ -512,6 +515,7 @@ def _reason(method: str, flagged: bool, available: bool) -> str:
         "iqr": "IQR upper fence",
         "lane_week_deviation": "Trailing lane-week deviation threshold",
         "service_deterioration": "Trailing service deterioration threshold",
+        "service_sla_breach": "Shipment service-level threshold",
         "data_quality": "Explicit data-quality rules",
     }
     return f"{labels[method]} {'triggered.' if flagged else 'not triggered.'}"
@@ -596,6 +600,7 @@ def _normalized_flags(
         service_score = (
             service_group_score if service_affected else (0.0 if service_available else np.nan)
         )
+        sla_score = float(excess_transit_days) if row.on_time_flag == 0 else 0.0
 
         dq_reasons: list[str] = []
         if row.weight_lbs <= 0:
@@ -667,6 +672,19 @@ def _normalized_flags(
                 np.nan,
                 service_group_score,
                 int(row.service_current_shipment_support),
+            ),
+            (
+                "service_sla_breach",
+                "service_reconciliation",
+                sla_score,
+                float(SERVICE_SLA_EXCESS_DAYS - 1),
+                1,
+                "rules_evaluated",
+                True,
+                row.ship_date,
+                np.nan,
+                np.nan,
+                1,
             ),
             (
                 "data_quality",

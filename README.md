@@ -35,7 +35,7 @@ duplicate temporal keys fail validation.
 
 ## Accepted evidence run
 
-The accepted public run is `cc024261-003c-4461-83f0-71e041694a54`, generated from the local
+The accepted public run is `2c9e22a8-27ff-4231-b164-f235b3f5a4bd`, generated from the local
 `faf5_2022_2024.csv` distribution source and 75,000 synthetic shipment invoices. The source file
 and every run artifact are checksum-bound in the manifest.
 
@@ -44,13 +44,13 @@ Held-out evaluation at the calibration-selected operating point:
 | Metric | Result |
 |---|---:|
 | Evaluation shipments | 12,500 |
-| Precision | 68.4% |
-| Recall | 77.4% |
-| F1 | 0.726 |
-| False-positive rate | 7.33% |
-| Review volume | 2,405 (19.24%) |
-| False negatives | 480 |
-| Estimated excess-cost coverage | 100.0% after floating-point rounding |
+| Precision | 98.3% |
+| Recall | 100.0% |
+| F1 | 0.991 |
+| False-positive rate | 0.36% |
+| Review volume | 2,162 (17.30%) |
+| False negatives | 0 |
+| Estimated excess-cost coverage | 100.0% |
 
 These are exception-detection metrics, not predicted-cause classification metrics. Per-anomaly
 tables are one-vs-rest. The selected configuration was chosen only from calibration data using
@@ -65,8 +65,12 @@ the recorded cost-aware rule; evaluation metrics were computed afterward.
 - Baseline statistics are fit on the baseline window only and carry a tamper-detecting fingerprint.
 - Rolling signals use strictly preceding observed weeks.
 - Evaluation rows cannot change baseline or calibration assignments.
-- The evaluator requires the exact shipment x five-detector matrix and fixed method-family
+- The evaluator requires the exact shipment x six-detector matrix and fixed method-family
   semantics.
+- Lane-week deviation remains contextual group evidence and cannot independently send every
+  shipment in a lane-week to review.
+- A direct service-level rule identifies late shipments at least two days beyond the mode contract;
+  carrier service trends remain a separate, strictly trailing signal.
 - Shipment KPIs deduplicate `shipment_id`; group evidence deduplicates `evidence_unit_id`; method
   agreement counts distinct method families. The 75,000/78,814 historical join-fan-out failure is
   preserved as a regression test.
