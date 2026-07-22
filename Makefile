@@ -1,44 +1,36 @@
-VENV = .venv
+VENV = .venv-v2
 PYTHON = $(VENV)/bin/python
 PIP = $(VENV)/bin/pip
-GENERATE_ARGS ?=
+FREIGHT = $(VENV)/bin/freight-v2
+BOOTSTRAP_PYTHON ?= python3.11
+ARTIFACT_ROOT ?= artifacts/runs
+PORTFOLIO_DATA ?=
 
-.PHONY: install download generate generate-priors generate-fixture load validate test lint evaluate dashboard clean
+.PHONY: install test lint format-check fixture run export-portfolio clean
 
 install:
-	python3 -m venv $(VENV)
+	$(BOOTSTRAP_PYTHON) -m venv $(VENV)
 	$(PIP) install --upgrade pip
-	$(PIP) install -r requirements.txt
-
-download:
-	$(PYTHON) scripts/download_data.py
-
-generate:
-	$(PYTHON) scripts/generate_synthetic.py $(GENERATE_ARGS)
-
-generate-priors:
-	$(PYTHON) scripts/generate_synthetic.py --use-priors $(GENERATE_ARGS)
-
-generate-fixture:
-	$(PYTHON) scripts/generate_synthetic.py --use-priors --n 500
-
-load:
-	$(PYTHON) scripts/load_snowflake.py
-
-validate:
-	$(PYTHON) scripts/validate_load.py
+	$(PIP) install -e '.[dev]'
 
 test:
-	$(VENV)/bin/pytest tests/ -v
+	$(PYTHON) -m pytest tests/ -q
 
 lint:
-	$(VENV)/bin/ruff check scripts/ sql/
+	$(VENV)/bin/ruff check src tests scripts/load_snowflake.py scripts/validate_load.py
 
-evaluate:
-	$(PYTHON) scripts/evaluate_anomaly.py --local
+format-check:
+	$(VENV)/bin/ruff format --check src tests scripts/load_snowflake.py scripts/validate_load.py
 
-dashboard:
-	$(PYTHON) scripts/dashboard.py
+fixture:
+	$(FREIGHT) build --seed-source TEST --rows 5000 --output /tmp/freight-v2-fixture
+
+run:
+	$(FREIGHT) build --seed-source TEST --rows 5000 --output $(ARTIFACT_ROOT)
+
+export-portfolio:
+	@test -n "$(PORTFOLIO_DATA)" || (echo "Set PORTFOLIO_DATA to the portfolio's public/data/freight/v2 directory" >&2; exit 2)
+	$(FREIGHT) export-portfolio --artifact-root $(ARTIFACT_ROOT) --run accepted --output "$(PORTFOLIO_DATA)"
 
 clean:
-	rm -rf data/raw/ data/processed/ $(VENV)
+	rm -rf -- .venv-v2 .pytest_cache .ruff_cache

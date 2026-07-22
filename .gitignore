@@ -1,7 +1,16 @@
 .env
+*.p8
+*.pem
+rsa_key*
 data/raw/
 data/processed/
+artifacts/runs/
+artifacts/accepted-run.json
+*.duckdb
+*.duckdb.wal
+.freight-v2-tmp/
 .venv/
+.venv-v2/
 *.pyc
 __pycache__/
 *.egg-info/

@@ -3,24 +3,24 @@ Interactive Freight Analytics Dashboard
 Run: python scripts/dashboard.py
 Then open http://localhost:8050
 """
+
 import json
 from pathlib import Path
 
 import dash
 import dash_bootstrap_components as dbc
-import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from dash import dcc, html, dash_table
+from dash import dash_table, dcc, html
 from evaluate_anomaly import compute_iqr_flags, compute_zscore_flags
 
 PROCESSED_DIR = Path("data/processed")
 
 # ── Colour palette ────────────────────────────────────────────
-C_NORMAL = "#4C8BF5"      # steel-blue
-C_ANOMALY = "#F5A623"     # amber
-C_HIGH = "#E53935"        # red
+C_NORMAL = "#4C8BF5"  # steel-blue
+C_ANOMALY = "#F5A623"  # amber
+C_HIGH = "#E53935"  # red
 C_BG = "#1E1E2E"
 C_SURFACE = "#2A2A3E"
 C_TEXT = "#E0E0E0"
@@ -30,6 +30,7 @@ TEMPLATE = "plotly_dark"
 
 
 # ── Data loading ──────────────────────────────────────────────
+
 
 def load_data():
     ships = pd.read_csv(PROCESSED_DIR / "shipments.csv", parse_dates=["ship_date"])
@@ -64,13 +65,11 @@ def compute_lane_week_trends(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
         .sort_values(["lane_id", "mode", "week_start"])
     )
-    weekly["rolling_4wk"] = (
-        weekly.groupby(["lane_id", "mode"])["avg_cpl"]
-        .transform(lambda x: x.shift(1).rolling(4, min_periods=4).mean())
+    weekly["rolling_4wk"] = weekly.groupby(["lane_id", "mode"])["avg_cpl"].transform(
+        lambda x: x.shift(1).rolling(4, min_periods=4).mean()
     )
-    weekly["pct_dev"] = (
-        (weekly["avg_cpl"] - weekly["rolling_4wk"]) /
-        weekly["rolling_4wk"].clip(lower=1e-6)
+    weekly["pct_dev"] = (weekly["avg_cpl"] - weekly["rolling_4wk"]) / weekly["rolling_4wk"].clip(
+        lower=1e-6
     )
     weekly["prior_weeks"] = weekly.groupby(["lane_id", "mode"]).cumcount()
     weekly["is_anomalous"] = (
@@ -81,25 +80,35 @@ def compute_lane_week_trends(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── KPI cards ─────────────────────────────────────────────────
 
+
 def kpi_card(title: str, value: str, color: str = C_TEXT) -> dbc.Card:
     return dbc.Card(
-        dbc.CardBody([
-            html.P(title, style={"color": C_MUTED, "fontSize": "0.8rem", "marginBottom": "4px"}),
-            html.H4(value, style={"color": color, "fontWeight": "bold"}),
-        ]),
+        dbc.CardBody(
+            [
+                html.P(
+                    title, style={"color": C_MUTED, "fontSize": "0.8rem", "marginBottom": "4px"}
+                ),
+                html.H4(value, style={"color": color, "fontWeight": "bold"}),
+            ]
+        ),
         style={"backgroundColor": C_SURFACE, "border": "none"},
     )
 
 
 # ── Chart builders ────────────────────────────────────────────
 
+
 def fig_violin_cpl(df: pd.DataFrame) -> go.Figure:
     df = df.copy()
     df["anomaly_label"] = df["flagged"].map({0: "Normal", 1: "Flagged"})
     fig = px.violin(
-        df, x="mode", y="cpl", color="anomaly_label",
+        df,
+        x="mode",
+        y="cpl",
+        color="anomaly_label",
         color_discrete_map={"Normal": C_NORMAL, "Flagged": C_ANOMALY},
-        box=True, points=False,
+        box=True,
+        points=False,
         labels={"cpl": "Cost per lb ($)", "mode": "Mode", "anomaly_label": ""},
         title="Cost-per-lb Distribution by Mode",
         template=TEMPLATE,
@@ -109,25 +118,29 @@ def fig_violin_cpl(df: pd.DataFrame) -> go.Figure:
 
 
 def fig_weekly_cpl(df: pd.DataFrame, trends: pd.DataFrame) -> go.Figure:
-    # Aggregate all modes for simplicity; one trace per mode
+    # Preserve mode through resampling so each trace remains comparable.
     df_weekly = (
-        df.groupby(["ship_date", "mode"])
-        .agg(avg_cpl=("cpl", "mean"))
+        df.set_index("ship_date")
+        .groupby("mode")["cpl"]
+        .resample("W")
+        .mean()
+        .rename("avg_cpl")
         .reset_index()
         .rename(columns={"ship_date": "week"})
     )
     df_weekly["week"] = pd.to_datetime(df_weekly["week"])
-    df_weekly = df_weekly.resample("W", on="week").agg(avg_cpl=("avg_cpl", "mean")).reset_index()
 
     # Anomalous weeks (any lane)
     anomaly_weeks = trends.loc[trends["is_anomalous"] == 1, "week_start"].unique()
 
     fig = px.line(
-        df_weekly, x="week", y="avg_cpl",
-        labels={"avg_cpl": "Avg Cost/lb ($)", "week": ""},
-        title="Weekly Avg Cost-per-lb (All Modes)",
+        df_weekly,
+        x="week",
+        y="avg_cpl",
+        color="mode",
+        labels={"avg_cpl": "Avg Cost/lb ($)", "week": "", "mode": "Mode"},
+        title="Weekly Avg Cost-per-lb by Mode",
         template=TEMPLATE,
-        color_discrete_sequence=[C_NORMAL],
     )
     for wk in anomaly_weeks:
         fig.add_vline(x=pd.Timestamp(wk), line_color=C_ANOMALY, line_width=1, opacity=0.4)
@@ -135,26 +148,34 @@ def fig_weekly_cpl(df: pd.DataFrame, trends: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def fig_lane_heatmap(df: pd.DataFrame) -> go.Figure:
-    top_lanes = (
-        df.groupby("lane_id")["total_cost"].sum()
-        .nlargest(20).index.tolist()
-    )
+def fig_lane_spend_bar(df: pd.DataFrame) -> go.Figure:
+    top_lanes = df.groupby("lane_id")["total_cost"].sum().nlargest(20).index.tolist()
     subset = df[df["lane_id"].isin(top_lanes)]
-    agg = subset.groupby("lane_id").agg(
-        total_cost=("total_cost", "sum"),
-        anomaly_count=("flagged", "sum"),
-        total_count=("shipment_id", "count"),
-    ).reset_index()
+    agg = (
+        subset.groupby("lane_id")
+        .agg(
+            total_cost=("total_cost", "sum"),
+            anomaly_count=("flagged", "sum"),
+            total_count=("shipment_id", "count"),
+        )
+        .reset_index()
+    )
     agg["anomaly_density"] = agg["anomaly_count"] / agg["total_count"].clip(lower=1)
     agg = agg.sort_values("total_cost", ascending=True)
 
     fig = px.bar(
-        agg, x="total_cost", y="lane_id", orientation="h",
+        agg,
+        x="total_cost",
+        y="lane_id",
+        orientation="h",
         color="anomaly_density",
         color_continuous_scale=["#4C8BF5", "#F5A623", "#E53935"],
-        labels={"total_cost": "Total Freight Spend ($)", "lane_id": "Lane", "anomaly_density": "Anomaly Density"},
-        title="Top 20 Lanes by Total Spend (colored by anomaly density)",
+        labels={
+            "total_cost": "Total Freight Spend ($)",
+            "lane_id": "Lane",
+            "anomaly_density": "Anomaly Density",
+        },
+        title="Top 20 Lanes — Horizontal Spend Bar (colored by anomaly density)",
         template=TEMPLATE,
     )
     fig.update_layout(paper_bgcolor=C_BG, plot_bgcolor=C_BG, font_color=C_TEXT, height=550)
@@ -162,18 +183,29 @@ def fig_lane_heatmap(df: pd.DataFrame) -> go.Figure:
 
 
 def fig_carrier_scorecard(df: pd.DataFrame) -> go.Figure:
-    agg = df.groupby("carrier_id").agg(
-        on_time_rate=("on_time_flag", "mean"),
-        avg_cost=("total_cost", "mean"),
-        volume=("shipment_id", "count"),
-    ).reset_index()
+    agg = (
+        df.groupby(["carrier_id", "mode"])
+        .agg(
+            on_time_rate=("on_time_flag", "mean"),
+            avg_cost=("total_cost", "mean"),
+            volume=("shipment_id", "count"),
+        )
+        .reset_index()
+    )
     fig = px.scatter(
-        agg, x="avg_cost", y="on_time_rate", size="volume",
+        agg,
+        x="avg_cost",
+        y="on_time_rate",
+        size="volume",
         hover_name="carrier_id",
-        color="on_time_rate",
-        color_continuous_scale=["#E53935", "#F5A623", "#4C8BF5"],
-        labels={"avg_cost": "Avg Cost/Shipment ($)", "on_time_rate": "On-Time Rate", "volume": "Shipments"},
-        title="Carrier Scorecard — On-Time Rate vs Avg Cost",
+        color="mode",
+        labels={
+            "avg_cost": "Avg Cost/Shipment ($)",
+            "on_time_rate": "On-Time Rate",
+            "volume": "Shipments",
+            "mode": "Mode",
+        },
+        title="Carrier Cost vs Service by Mode",
         template=TEMPLATE,
     )
     fig.update_layout(paper_bgcolor=C_BG, plot_bgcolor=C_BG, font_color=C_TEXT)
@@ -183,36 +215,48 @@ def fig_carrier_scorecard(df: pd.DataFrame) -> go.Figure:
 def eval_table(eval_report: dict | None) -> dbc.Card:
     if eval_report is None:
         return dbc.Card(
-            dbc.CardBody(html.P("Run `make evaluate` to generate evaluation metrics.", style={"color": C_MUTED})),
+            dbc.CardBody(
+                html.P(
+                    "Run `make evaluate` to generate evaluation metrics.",
+                    style={"color": C_MUTED},
+                )
+            ),
             style={"backgroundColor": C_SURFACE, "border": "none"},
         )
     rows = []
     for method, m in eval_report["per_method"].items():
-        rows.append({
-            "Method": method,
-            "Precision": f"{m['precision']:.3f}",
-            "Recall": f"{m['recall']:.3f}",
-            "F1": f"{m['f1']:.3f}",
-            "FPR": f"{m['fpr']:.3f}",
-            "Flagged": f"{m['n_flagged']:,}",
-        })
+        rows.append(
+            {
+                "Method": method,
+                "Precision": f"{m['precision']:.3f}",
+                "Recall": f"{m['recall']:.3f}",
+                "F1": f"{m['f1']:.3f}",
+                "FPR": f"{m['fpr']:.3f}",
+                "Flagged": f"{m['n_flagged']:,}",
+            }
+        )
     d = eval_report["distinct_shipment"]
-    rows.append({
-        "Method": "ALL (distinct)",
-        "Precision": f"{d['precision']:.3f}",
-        "Recall": f"{d['recall']:.3f}",
-        "F1": f"{d['f1']:.3f}",
-        "FPR": f"{d['fpr']:.3f}",
-        "Flagged": f"{d['n_flagged']:,}",
-    })
+    rows.append(
+        {
+            "Method": "ALL (distinct)",
+            "Precision": f"{d['precision']:.3f}",
+            "Recall": f"{d['recall']:.3f}",
+            "F1": f"{d['f1']:.3f}",
+            "FPR": f"{d['fpr']:.3f}",
+            "Flagged": f"{d['n_flagged']:,}",
+        }
+    )
     table = dash_table.DataTable(
         data=rows,
-        columns=[{"name": c, "id": c} for c in rows[0].keys()],
+        columns=[{"name": c, "id": c} for c in rows[0]],
         style_header={"backgroundColor": C_BG, "color": C_MUTED, "fontWeight": "bold"},
         style_cell={"backgroundColor": C_SURFACE, "color": C_TEXT, "border": "1px solid #333"},
         style_data_conditional=[
-            {"if": {"filter_query": '{Method} = "ALL (distinct)"'},
-             "fontWeight": "bold", "color": C_ANOMALY},
+            {
+                "if": {"filter_query": '{Method} = "ALL (distinct)"'},
+                "fontWeight": "bold",
+                "color": C_ANOMALY,
+            },
         ],
     )
     return dbc.Card(
@@ -222,6 +266,7 @@ def eval_table(eval_report: dict | None) -> dbc.Card:
 
 
 # ── App layout ────────────────────────────────────────────────
+
 
 def build_layout(ships, gt, meta, eval_report):
     ships = compute_local_flags(ships)
@@ -234,46 +279,60 @@ def build_layout(ships, gt, meta, eval_report):
     avg_cpl = f"${ships['cpl'].mean():.3f}"
     on_time = f"{ships['on_time_flag'].mean():.1%}"
 
-    layout = dbc.Container([
-        # Title
-        dbc.Row(dbc.Col(
-            html.H3("Freight Cost Anomaly & KPI Tracker",
-                    style={"color": C_TEXT, "marginTop": "20px", "marginBottom": "4px"}),
-        )),
-
-        # KPI cards
-        dbc.Row([
-            dbc.Col(kpi_card("Total Shipments", total_ships), md=3),
-            dbc.Col(kpi_card("Anomaly Rate", anomaly_rate, C_ANOMALY), md=3),
-            dbc.Col(kpi_card("Avg Cost/lb", avg_cpl), md=3),
-            dbc.Col(kpi_card("On-Time Rate", on_time, C_NORMAL), md=3),
-        ], className="mb-3"),
-
-        # Violin + weekly trend
-        dbc.Row([
-            dbc.Col(dcc.Graph(figure=fig_violin_cpl(ships)), md=6),
-            dbc.Col(dcc.Graph(figure=fig_weekly_cpl(ships, trends)), md=6),
-        ], className="mb-3"),
-
-        # Lane heatmap
-        dbc.Row(dbc.Col(dcc.Graph(figure=fig_lane_heatmap(ships))), className="mb-3"),
-
-        # Carrier scorecard + eval table
-        dbc.Row([
-            dbc.Col(dcc.Graph(figure=fig_carrier_scorecard(ships)), md=7),
-            dbc.Col(eval_table(eval_report), md=5),
-        ], className="mb-3"),
-
-        # Footer
-        dbc.Row(dbc.Col(
-            html.P(
-                f"seed_source={meta['seed_source']} | "
-                f"run_id={meta['run_id']} | "
-                f"generated_at={meta['generated_at'][:19]}",
-                style={"color": C_MUTED, "fontSize": "0.75rem", "marginTop": "8px"},
-            )
-        )),
-    ], fluid=True, style={"backgroundColor": C_BG, "minHeight": "100vh", "padding": "0 24px"})
+    layout = dbc.Container(
+        [
+            # Title
+            dbc.Row(
+                dbc.Col(
+                    html.H3(
+                        "Freight Cost Anomaly & KPI Tracker",
+                        style={"color": C_TEXT, "marginTop": "20px", "marginBottom": "4px"},
+                    ),
+                )
+            ),
+            # KPI cards
+            dbc.Row(
+                [
+                    dbc.Col(kpi_card("Total Shipments", total_ships), md=3),
+                    dbc.Col(kpi_card("Anomaly Rate", anomaly_rate, C_ANOMALY), md=3),
+                    dbc.Col(kpi_card("Avg Cost/lb", avg_cpl), md=3),
+                    dbc.Col(kpi_card("On-Time Rate", on_time, C_NORMAL), md=3),
+                ],
+                className="mb-3",
+            ),
+            # Violin + weekly trend
+            dbc.Row(
+                [
+                    dbc.Col(dcc.Graph(figure=fig_violin_cpl(ships)), md=6),
+                    dbc.Col(dcc.Graph(figure=fig_weekly_cpl(ships, trends)), md=6),
+                ],
+                className="mb-3",
+            ),
+            # Lane spend bar
+            dbc.Row(dbc.Col(dcc.Graph(figure=fig_lane_spend_bar(ships))), className="mb-3"),
+            # Carrier scorecard + eval table
+            dbc.Row(
+                [
+                    dbc.Col(dcc.Graph(figure=fig_carrier_scorecard(ships)), md=7),
+                    dbc.Col(eval_table(eval_report), md=5),
+                ],
+                className="mb-3",
+            ),
+            # Footer
+            dbc.Row(
+                dbc.Col(
+                    html.P(
+                        f"seed_source={meta['seed_source']} | "
+                        f"run_id={meta['run_id']} | "
+                        f"generated_at={meta['generated_at'][:19]}",
+                        style={"color": C_MUTED, "fontSize": "0.75rem", "marginTop": "8px"},
+                    )
+                )
+            ),
+        ],
+        fluid=True,
+        style={"backgroundColor": C_BG, "minHeight": "100vh", "padding": "0 24px"},
+    )
 
     return layout
 
