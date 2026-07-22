@@ -10,6 +10,7 @@ import pytest
 import freight_v2.export as export_module
 from freight_v2.cli import main
 from freight_v2.config import SCHEMA_VERSION, SeedSource
+from freight_v2.detection import DETECTION_METHODS
 from freight_v2.export import export_portfolio_bundle, validate_public_bundle
 from freight_v2.provenance import ArtifactHashMismatchError, validate_manifest
 from freight_v2.run_builder import build_run
@@ -52,7 +53,7 @@ def _all_files(root: Path) -> list[Path]:
 def test_build_registers_complete_selected_derived_artifacts(built_run: Path) -> None:
     manifest = validate_manifest(built_run)
     assert set(manifest.artifacts) >= DERIVED_ARTIFACTS
-    assert manifest.artifacts["anomaly_flags"].row_count == 500 * 5
+    assert manifest.artifacts["anomaly_flags"].row_count == 500 * len(DETECTION_METHODS)
     for name in DERIVED_ARTIFACTS:
         assert (built_run / manifest.artifacts[name].filename).is_file()
 
@@ -70,9 +71,14 @@ def test_export_is_bounded_cross_referenced_and_truth_free(built_run: Path, tmp_
     assert payload["run_id"] == built_run.name
     assert payload["schema_version"] == SCHEMA_VERSION
     assert payload["representative_lanes"]
+    assert len(payload["alert_details"]) > 0
     roles = [entry["role"] for entry in payload["representative_lanes"]]
     assert roles == sorted(roles, key={"high": 0, "medium": 1, "data_quality": 2}.get)
-    assert len(list((output / "lanes").glob("*.json"))) == len(roles)
+    assert len(list((output / "lanes").glob("*.json"))) == len(payload["alert_details"])
+    assert {entry["alert_id"] for entry in payload["alert_details"]} == {
+        alert["alert_id"]
+        for alert in json.loads((output / "alerts.json").read_text(encoding="utf-8"))["alerts"]
+    }
 
     for path in _all_files(output):
         artifact = json.loads(path.read_text(encoding="utf-8"))

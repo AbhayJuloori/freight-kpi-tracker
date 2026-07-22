@@ -66,6 +66,7 @@ def _flags() -> pd.DataFrame:
         "iqr": ("cost_reconciliation", "baseline_shipments"),
         "lane_week_deviation": ("lane_cost_trend", "prior_observed_weeks"),
         "service_deterioration": ("carrier_service_trend", "prior_observed_weeks"),
+        "service_sla_breach": ("service_reconciliation", "rules_evaluated"),
         "data_quality": ("data_quality", "rules_evaluated"),
     }
     triggered = {
@@ -127,6 +128,24 @@ def test_exact_held_out_hand_calculation_and_type_metrics() -> None:
     assert carrier["false_positive_rate"] == pytest.approx(2 / 5)
     assert carrier["excess_cost_coverage"] == 1.0
     assert set(result.by_anomaly_type["anomaly_type"]) == set(ANOMALY_TYPES)
+
+
+def test_lane_week_is_context_but_service_sla_is_a_review_trigger() -> None:
+    lane_only = _flags()
+    lane_only.loc[
+        lane_only["shipment_id"].eq("D") & lane_only["method"].eq("lane_week_deviation"),
+        "is_flagged",
+    ] = 1
+    lane_result = evaluate_flags(_scored(), lane_only, _truth(), window="evaluation")
+    assert lane_result.overall["review_volume"] == 3
+
+    with_sla = lane_only.copy()
+    with_sla.loc[
+        with_sla["shipment_id"].eq("D") & with_sla["method"].eq("service_sla_breach"),
+        "is_flagged",
+    ] = 1
+    service_result = evaluate_flags(_scored(), with_sla, _truth(), window="evaluation")
+    assert service_result.overall["review_volume"] == 4
 
 
 def test_union_and_method_agreement_use_shipment_and_distinct_family_grain() -> None:
@@ -226,7 +245,7 @@ def test_group_evidence_deduplicates_historical_fanout_style_fixture() -> None:
     affected_count = 3_814
     # The historical defect repeated a 75k group support value across 3,814 affected rows.
     # Materializing the affected shipment grain is sufficient to prove that neither value
-    # is multiplied; the normalized matrix still contains all five detector rows per shipment.
+    # is multiplied; the normalized matrix still contains every detector row per shipment.
     shipment_ids = np.array([f"SHP-{index:08d}" for index in range(affected_count)])
     scored = pd.DataFrame(
         {
@@ -244,6 +263,7 @@ def test_group_evidence_deduplicates_historical_fanout_style_fixture() -> None:
         "iqr": ("cost_reconciliation", "baseline_shipments"),
         "lane_week_deviation": ("lane_cost_trend", "prior_observed_weeks"),
         "service_deterioration": ("carrier_service_trend", "prior_observed_weeks"),
+        "service_sla_breach": ("service_reconciliation", "rules_evaluated"),
         "data_quality": ("data_quality", "rules_evaluated"),
     }
     repeated_ids = np.repeat(shipment_ids, len(DETECTION_METHODS))

@@ -13,6 +13,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from freight_v2.config import SCHEMA_VERSION
+from freight_v2.evaluation import REVIEW_TRIGGER_METHODS
 from freight_v2.generation import EVALUATION_START
 from freight_v2.provenance import RunManifest, sha256_file
 from freight_v2.run_builder import REQUIRED_ARTIFACTS, _validate_canonical_run
@@ -66,7 +67,12 @@ def _identity(run_id: str) -> dict[str, str]:
 
 def _network_payload(run_id: str, shipments: pd.DataFrame, flags: pd.DataFrame) -> dict[str, Any]:
     evaluation = shipments.loc[shipments["ship_date"].ge(EVALUATION_START)].copy()
-    flagged_ids = set(flags.loc[flags["is_flagged"].eq(1), "shipment_id"])
+    flagged_ids = set(
+        flags.loc[
+            flags["is_flagged"].eq(1) & flags["method"].isin(REVIEW_TRIGGER_METHODS),
+            "shipment_id",
+        ]
+    )
     evaluation["is_flagged"] = evaluation["shipment_id"].isin(flagged_ids).astype(int)
     lanes = (
         evaluation.groupby(["lane_id", "mode"], observed=True, sort=True)
@@ -146,19 +152,34 @@ def _lane_payload(
 ) -> dict[str, Any]:
     lane_id = str(alert["lane_id"])
     mode = str(alert["mode"])
+    alert_id = str(alert["alert_id"])
+    carrier_scope = str(alert["carrier_scope"])
+    window_start = pd.Timestamp(alert["window_start"])
+    window_end = pd.Timestamp(alert["window_end"])
     lane_shipments = shipments.loc[
         shipments["ship_date"].ge(EVALUATION_START) & shipments["lane_id"].eq(lane_id)
     ].copy()
     if mode != "ALL":
         lane_shipments = lane_shipments.loc[lane_shipments["mode"].eq(mode)]
+    alert_scope = lane_shipments["ship_date"].between(window_start, window_end)
+    if carrier_scope != "ALL":
+        alert_scope &= lane_shipments["carrier_id"].eq(carrier_scope)
+    scoped_ids = set(lane_shipments.loc[alert_scope, "shipment_id"])
     lane_flags = flags.loc[
         flags["shipment_id"].isin(lane_shipments["shipment_id"]) & flags["is_flagged"].eq(1)
     ].copy()
-    flagged_ids = set(lane_flags["shipment_id"])
-    lane_shipments["flagged"] = lane_shipments["shipment_id"].isin(flagged_ids)
+    review_ids = set(
+        lane_flags.loc[lane_flags["method"].isin(REVIEW_TRIGGER_METHODS), "shipment_id"]
+    )
+    alert_evidence_ids = set(
+        lane_flags.loc[lane_flags["shipment_id"].isin(scoped_ids), "shipment_id"]
+    )
+    lane_flags["_selected_alert"] = lane_flags["shipment_id"].isin(alert_evidence_ids)
+    lane_shipments["flagged"] = lane_shipments["shipment_id"].isin(review_ids)
+    lane_shipments["selected_alert"] = lane_shipments["shipment_id"].isin(alert_evidence_ids)
     lane_shipments = lane_shipments.sort_values(
-        ["flagged", "ship_date", "shipment_id"],
-        ascending=[False, False, True],
+        ["selected_alert", "flagged", "ship_date", "shipment_id"],
+        ascending=[False, False, False, True],
         kind="stable",
     ).head(MAX_LANE_SHIPMENTS)
     shipment_fields = [
@@ -170,6 +191,7 @@ def _lane_payload(
         "on_time_flag",
         "transit_days",
         "flagged",
+        "selected_alert",
     ]
     flag_fields = [
         "shipment_id",
@@ -185,16 +207,23 @@ def _lane_payload(
         lane_alerts = lane_alerts.loc[lane_alerts["mode"].isin({mode, "ALL"})]
     return {
         **_identity(run_id),
+        "alert_id": alert_id,
         "representative_role": role,
         "lane_id": lane_id,
         "mode": mode,
+        "carrier_scope": carrier_scope,
+        "window_start": window_start.isoformat(),
+        "window_end": window_end.isoformat(),
         "alert_ids": sorted(lane_alerts["alert_id"].astype(str).unique()),
+        "selected_alert_shipment_count": int(len(alert_evidence_ids)),
         "shipment_count": int(len(lane_shipments)),
         "shipments": _records(lane_shipments[shipment_fields]),
         "flag_evidence": _records(
-            lane_flags.sort_values(["shipment_id", "method"], kind="stable")[flag_fields].head(
-                MAX_LANE_FLAGS
-            )
+            lane_flags.sort_values(
+                ["_selected_alert", "shipment_id", "method"],
+                ascending=[False, True, True],
+                kind="stable",
+            )[flag_fields].head(MAX_LANE_FLAGS)
         ),
     }
 
@@ -237,17 +266,32 @@ def validate_public_bundle(root: Path) -> dict[str, Any]:
     alerts_payload = _read_json(root / "alerts.json")
     alert_ids = {str(alert["alert_id"]) for alert in alerts_payload.get("alerts", [])}
     lane_paths = set()
+    detail_ids = set()
+    for detail in manifest.get("alert_details", []):
+        alert_id = str(detail.get("alert_id", ""))
+        lane_path = str(detail.get("path", ""))
+        if alert_id not in alert_ids:
+            raise ValueError("alert detail references an unknown alert")
+        if alert_id in detail_ids:
+            raise ValueError("alert detail IDs must be unique")
+        detail_ids.add(alert_id)
+        lane_paths.add(lane_path)
+        lane_payload = _read_json(root / lane_path)
+        if lane_payload.get("alert_id") != alert_id:
+            raise ValueError("alert detail file does not match its alert")
+        serialized_lane = json.dumps(lane_payload).lower()
+        if any(f'"{field}"' in serialized_lane for field in FORBIDDEN_LANE_FIELDS):
+            raise ValueError("operator lane evidence contains forbidden truth fields")
+    if detail_ids != alert_ids:
+        raise ValueError("every public alert must have exactly one detail file")
+
     for representative in manifest.get("representative_lanes", []):
         lane_path = str(representative.get("path", ""))
-        lane_paths.add(lane_path)
         if representative.get("alert_id") not in alert_ids:
             raise ValueError("representative lane references an unknown alert")
         lane_payload = _read_json(root / lane_path)
         if representative["alert_id"] not in lane_payload.get("alert_ids", []):
             raise ValueError("lane evidence does not reference its representative alert")
-        serialized_lane = json.dumps(lane_payload).lower()
-        if any(f'"{field}"' in serialized_lane for field in FORBIDDEN_LANE_FIELDS):
-            raise ValueError("operator lane evidence contains forbidden truth fields")
     actual_lane_paths = {str(path.relative_to(root)) for path in (root / "lanes").glob("*.json")}
     if lane_paths != actual_lane_paths:
         raise ValueError("representative lane list does not exactly match lane files")
@@ -307,15 +351,23 @@ def export_portfolio_bundle(run_path: Path, output: Path) -> Path:
         )
         _write_json(staging / "evaluation.json", evaluation)
 
+        representative_roles = {
+            str(alert["alert_id"]): role for role, alert in _representatives(alerts)
+        }
         representative_rows = []
-        for role, alert in _representatives(alerts):
-            filename = f"{role}-{_slug(alert['lane_id'])}-{_slug(alert['mode'])}.json"
+        detail_rows = []
+        for _, alert in alerts.iterrows():
+            alert_id = str(alert["alert_id"])
+            role = representative_roles.get(alert_id, "alert")
+            filename = f"{_slug(alert_id)}.json"
             relative = f"lanes/{filename}"
             lane_payload = _lane_payload(manifest.run_id, role, alert, shipments, flags, alerts)
             _write_json(staging / relative, lane_payload)
-            representative_rows.append(
-                {"role": role, "path": relative, "alert_id": str(alert["alert_id"])}
-            )
+            detail_rows.append({"path": relative, "alert_id": alert_id})
+            if role != "alert":
+                representative_rows.append({"role": role, "path": relative, "alert_id": alert_id})
+        role_order = {"high": 0, "medium": 1, "data_quality": 2}
+        representative_rows.sort(key=lambda row: role_order[str(row["role"])])
 
         artifact_hashes = {
             str(path.relative_to(staging)): sha256_file(path)
@@ -328,6 +380,7 @@ def export_portfolio_bundle(run_path: Path, output: Path) -> Path:
                 **_identity(manifest.run_id),
                 "source_manifest_sha256": sha256_file(run_path / "manifest.json"),
                 "artifact_hashes": artifact_hashes,
+                "alert_details": detail_rows,
                 "representative_lanes": representative_rows,
             },
         )

@@ -27,14 +27,14 @@ uncertainty/support.
 ## Evaluation
 
 The accepted 75,000-row FAF5-seeded run evaluates on 12,500 later shipments. At the operating
-point selected from calibration data, precision is 68.4%, recall is 77.4%, F1 is 0.726, FPR is
-7.33%, and review volume is 2,405 shipments. Results depend on the synthetic anomaly taxonomy and
+point selected from calibration data, precision is 98.3%, recall is 100.0%, F1 is 0.991, FPR is
+0.36%, and review volume is 2,162 shipments. Results depend on the synthetic anomaly taxonomy and
 prevalence. Per-type metrics are one-vs-rest exception metrics, not cause-classification accuracy.
 
 ## Important failure modes
 
-- A group trend can identify legitimate review peers that were not the exact synthetically
-  modified rows, reducing row-level precision.
+- Lane-week trends can identify legitimate neighboring shipments, so they remain contextual
+  evidence and do not independently trigger shipment review.
 - Sparse groups fall back or remain unevaluable rather than inventing support.
 - Data-quality corruption can make monetary exposure unavailable.
 - Synthetic curves are smoother and more controlled than production freight operations.
@@ -47,7 +47,7 @@ prevalence. Per-type metrics are one-vs-rest exception metrics, not cause-classi
 - baseline/calibration/evaluation separation;
 - frozen-model fingerprint and scored-lineage reconstruction;
 - truth-column rejection;
-- exact five-method matrix validation;
+- exact six-method matrix validation;
 - shipment, evidence-unit, and distinct-family deduplication;
 - bounded sensitivity states and calibration-only operating-point selection;
 - transparent priority components and deterministic reasons.

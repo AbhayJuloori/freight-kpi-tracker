@@ -127,6 +127,28 @@ def test_safe_scale_keeps_zero_mad_and_iqr_scores_finite(baseline_result) -> Non
     assert result.flags.loc[evaluable, "score"].map(np.isfinite).all()
 
 
+def test_service_sla_breach_flags_direct_contract_delay(baseline_result) -> None:
+    scored = baseline_result.scored.copy(deep=True)
+    delayed_index, control_index = scored.index[:2]
+    scored.loc[[delayed_index, control_index], "on_time_flag"] = 0
+    scored.loc[delayed_index, "transit_days"] = (
+        MODE_TRANSIT_DAYS[scored.loc[delayed_index, "mode"]] + 2
+    )
+    scored.loc[control_index, "transit_days"] = (
+        MODE_TRANSIT_DAYS[scored.loc[control_index, "mode"]] + 1
+    )
+
+    flags = detect_exceptions(BaselineResult(scored=scored, model=baseline_result.model)).flags
+    sla = flags.loc[flags["method"].eq("service_sla_breach")].set_index("shipment_id")
+    delayed_id = scored.loc[delayed_index, "shipment_id"]
+    control_id = scored.loc[control_index, "shipment_id"]
+    assert sla.loc[delayed_id, "is_flagged"] == 1
+    assert sla.loc[delayed_id, "score"] == 2.0
+    assert sla.loc[delayed_id, "threshold"] == 1.0
+    assert sla.loc[delayed_id, "support_unit"] == "rules_evaluated"
+    assert sla.loc[control_id, "is_flagged"] == 0
+
+
 def test_missing_weeks_use_preceding_observed_weeks_only(baseline_result) -> None:
     scored = baseline_result.scored
     target = scored.groupby(["lane_id", "mode"]).size().idxmax()
